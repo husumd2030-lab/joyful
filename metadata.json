@@ -1,0 +1,9 @@
+{
+  "name": "Little Sprouts Kids Care",
+  "description": "A vibrant and interactive multi-page website for a modern preschool and daycare, featuring an AI mascot to answer parents' questions.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
