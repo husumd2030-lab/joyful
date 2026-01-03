@@ -23,14 +23,30 @@ export default function ChatBot({ lang }: ChatBotProps) {
   const [artResult, setArtResult] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
-  // Update welcome message on language change
+  // Enhanced translation strings for specific errors
+  const errorText = {
+    en: {
+      micDenied: "I can't hear you! 👂 It looks like the microphone permission was denied or dismissed. Please click the 'Lock' or 'Microphone' icon in your browser's address bar to allow access, then try again.",
+      micGeneral: "Something went wrong with the microphone. 🎤 Can you try checking your device or refreshing the page?",
+      artFail: "Oh no, my crayons broke! 🎨 My imagination is having a little trouble. Let's try a different idea!",
+      voiceFail: "I lost my voice for a second! ☁️ Let's try reconnecting.",
+      retry: "Try Voice Again"
+    },
+    am: {
+      micDenied: "ልሰማህ አልቻልኩም! 👂 የማይክሮፎን ፈቃድ ውድቅ ተደርጓል ወይም ተዘግቷል። እባክዎን ለመፍቀድ በአሳሽዎ የአድራሻ አሞሌ ውስጥ ያለውን 'ቁልፍ' ወይም 'ማይክሮፎን' ምልክት ይጫኑ እና እንደገና ይሞክሩ።",
+      micGeneral: "ከማይክሮፎኑ ጋር የሆነ ችግር ተፈጥሯል። 🎤 እባክዎን መሣሪያዎን ማረጋገጥ ወይም ገጹን ማደስ ይችላሉ?",
+      artFail: "ውይ፣ የኔ መፃፊያ ተሰበረ! 🎨 ምናቤ ትንሽ ተቸግሯል። እስቲ ሌላ ሃሳብ እንሞክር!",
+      voiceFail: "ድምፄ ለጥቂት ጊዜ ጠፍቶ ነበር! ☁️ እንደገና ለመገናኘት እንሞክር።",
+      retry: "እንደገና በድምፅ ይሞክሩ"
+    }
+  }[lang];
+
   useEffect(() => {
     if (messages.length === 1 && messages[0].role === 'model') {
       setMessages([{ role: 'model', text: t.welcome }]);
     }
   }, [lang, t.welcome]);
 
-  // Live API Refs
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const nextStartTimeRef = useRef(0);
@@ -74,16 +90,16 @@ export default function ChatBot({ lang }: ChatBotProps) {
     setIsLoading(true);
 
     if (mode === 'art') {
-      const img = await generateArtProject(userMsg);
-      if (img) {
-        setArtResult(img);
+      const result = await generateArtProject(userMsg);
+      if (!result.error && result.data) {
+        setArtResult(result.data);
         setMessages(prev => [...prev, { role: 'model', text: lang === 'en' ? "Here is the art project I imagined for you! 🎨" : "የገመትኩት የጥበብ ፕሮጀክት ይኸው! 🎨" }]);
       } else {
-        setMessages(prev => [...prev, { role: 'model', text: lang === 'en' ? "Oh no, my crayons broke! Let's try another idea." : "ውይ፣ የኔ መፃፊያ ተሰበረ! ሌላ ሃሳብ እንሞክር።" }]);
+        setMessages(prev => [...prev, { role: 'model', text: errorText.artFail }]);
       }
     } else {
-      const response = await getGeminiChatResponse(userMsg);
-      setMessages(prev => [...prev, { role: 'model', text: response }]);
+      const result = await getGeminiChatResponse(userMsg);
+      setMessages(prev => [...prev, { role: 'model', text: result.text }]);
     }
     setIsLoading(false);
   };
@@ -93,8 +109,25 @@ export default function ChatBot({ lang }: ChatBotProps) {
       cleanupVoice();
       return;
     }
+    
     setIsListening(true);
     setMode('voice');
+    
+    let stream: MediaStream;
+    try {
+      // Explicitly request audio
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err: any) {
+      console.error("Microphone access error:", err);
+      // NotAllowedError covers both explicit denial and dismissed state in most browsers
+      const isPermissionError = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.message?.toLowerCase().includes('dismissed');
+      const msg = isPermissionError ? errorText.micDenied : errorText.micGeneral;
+      
+      setMessages(prev => [...prev, { role: 'model', text: msg }]);
+      setIsListening(false);
+      setMode('chat');
+      return;
+    }
     
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -103,10 +136,13 @@ export default function ChatBot({ lang }: ChatBotProps) {
       
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
       const outputCtx = new AudioContextClass({ sampleRate: 24000 });
+      
+      // Ensure context is resumed
+      if (inputCtx.state === 'suspended') await inputCtx.resume();
+      if (outputCtx.state === 'suspended') await outputCtx.resume();
+      
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -126,6 +162,9 @@ export default function ChatBot({ lang }: ChatBotProps) {
               sessionPromise.then(session => {
                 activeSessionRef.current = session;
                 session.sendRealtimeInput({ media: { data: btoa(binary), mimeType: 'audio/pcm;rate=16000' } });
+              }).catch(err => {
+                console.error("Session send error:", err);
+                cleanupVoice();
               });
             };
             source.connect(scriptProcessor);
@@ -157,8 +196,14 @@ export default function ChatBot({ lang }: ChatBotProps) {
               nextStartTimeRef.current = 0;
             }
           },
-          onerror: (e) => { console.error("Live error:", e); cleanupVoice(); },
-          onclose: () => cleanupVoice()
+          onerror: (e) => { 
+            console.error("Live session error event:", e);
+            setMessages(prev => [...prev, { role: 'model', text: errorText.voiceFail }]);
+            cleanupVoice(); 
+          },
+          onclose: () => {
+            cleanupVoice();
+          }
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -167,7 +212,8 @@ export default function ChatBot({ lang }: ChatBotProps) {
         }
       });
     } catch (err) {
-      console.error("Voice fail:", err);
+      console.error("Voice connection failed:", err);
+      setMessages(prev => [...prev, { role: 'model', text: errorText.voiceFail }]);
       cleanupVoice();
     }
   };
@@ -183,6 +229,7 @@ export default function ChatBot({ lang }: ChatBotProps) {
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-16 h-16 bg-yellow-400 hover:bg-yellow-500 rounded-full shadow-2xl flex items-center justify-center text-white text-3xl transition-transform hover:scale-110 active:scale-95 border-4 border-white"
+        aria-label="Toggle Sunny Mascot Chat"
       >
         {isOpen ? <i className="fas fa-times"></i> : <i className="fas fa-sun animate-spin-slow"></i>}
       </button>
@@ -209,6 +256,14 @@ export default function ChatBot({ lang }: ChatBotProps) {
               <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[85%] p-3 rounded-2xl text-sm shadow-sm ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white text-gray-800 rounded-tl-none border border-gray-100'}`}>
                   {msg.text}
+                  {msg.text === errorText.micDenied && (
+                    <button 
+                      onClick={startVoiceSession}
+                      className="mt-2 block w-full bg-blue-50 text-blue-600 py-2 rounded-xl text-xs font-bold hover:bg-blue-100 transition-colors"
+                    >
+                      {errorText.retry}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -246,8 +301,14 @@ export default function ChatBot({ lang }: ChatBotProps) {
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
               placeholder={mode === 'art' ? t.artPlaceholder : t.placeholder}
               className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+              disabled={isLoading}
             />
-            <button onClick={handleSend} disabled={isLoading || !input.trim()} className="w-10 h-10 bg-yellow-400 hover:bg-yellow-500 text-white rounded-full flex items-center justify-center transition-colors shadow-md disabled:opacity-50">
+            <button 
+              onClick={handleSend} 
+              disabled={isLoading || !input.trim()} 
+              className="w-10 h-10 bg-yellow-400 hover:bg-yellow-500 text-white rounded-full flex items-center justify-center transition-colors shadow-md disabled:opacity-50"
+              aria-label="Send Message"
+            >
               <i className="fas fa-paper-plane"></i>
             </button>
           </div>

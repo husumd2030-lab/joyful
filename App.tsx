@@ -95,7 +95,10 @@ const App: React.FC = () => {
       />
       
       <main className="relative z-10">
-        {renderPage()}
+        {/* Animated Wrapper: Using key={currentPage} triggers a re-render and CSS animation on page change */}
+        <div key={currentPage} className="animate-page-enter">
+          {renderPage()}
+        </div>
 
         {currentPage !== 'contact' && (
           <section className="bg-gradient-to-r from-orange-500 to-pink-500 py-20 relative overflow-hidden">
